@@ -10,34 +10,19 @@ class OneDimensionalCNN(nn.Module):
 
         self.features = nn.Sequential(
             # Block 1
-            nn.Conv1d(
-                in_channels=2, 
-                out_channels=16, 
-                kernel_size=15, 
-                padding=7
-            ),
+            nn.Conv1d(2, 16, kernel_size=15, padding=7),
             nn.BatchNorm1d(16),
             nn.ReLU(),
             nn.MaxPool1d(4),
 
             # Block 2
-            nn.Conv1d(
-                in_channels=16, 
-                out_channels=32, 
-                kernel_size=9, 
-                padding=4
-            ),
+            nn.Conv1d(16, 32, kernel_size=9, padding=4),
             nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.MaxPool1d(4),
 
             # Block 3
-            nn.Conv1d(
-                in_channels=32, 
-                out_channels=64, 
-                kernel_size=9, 
-                padding=4
-            ),
+            nn.Conv1d(32, 64, kernel_size=9, padding=4),
             nn.BatchNorm1d(64),
             nn.ReLU(),
 
@@ -71,45 +56,25 @@ class TwoDimensionalCNN(nn.Module):
 
         self.features = nn.Sequential(
             # Block 1
-            nn.Conv2d(
-                in_channels=1,
-                out_channels=32,
-                kernel_size=3,
-                padding=1
-            ),
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
 
             # Block 2
-            nn.Conv2d(
-                in_channels=32,
-                out_channels=64,
-                kernel_size=3,
-                padding=1
-            ),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
 
             # Block 3
-            nn.Conv2d(
-                in_channels=64,
-                out_channels=128,
-                kernel_size=3,
-                padding=1
-            ),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
 
             # Block 4
-            nn.Conv2d(
-                in_channels=128,
-                out_channels=256,
-                kernel_size=3,
-                padding=1
-            ),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
 
@@ -221,11 +186,13 @@ class TakawaleRoyDNN(nn.Module):
     '''
     This model is supposed to resemble the DNN used by Takawale and Roy.
 
-    The model takes in 5 inputs: ILD_low, ILD_high, ITD_low, ITD_high and ratio of energies(ILD_low * 1/ILD_low). * = convolution.
+    The model takes in 5 inputs: 
+    ILD_low, ILD_high, ITD_low, ITD_high and 
+    inverse convolution -> (ILD_high * 1/ILD_low). * = convolution.
 
     Each input is a vector or values computed from a moving window (STFT).
 
-    The model then outputs 4 predicted estimates: sin(theta) and cos(theat) for both the speaker and listener orietations.
+    The model then outputs 4 predicted estimates: sin(theta) and cos(theta) for both the speaker and listener orietations.
     '''
 
     def __init__(self):
@@ -233,75 +200,47 @@ class TakawaleRoyDNN(nn.Module):
 
         self.features = nn.Sequential(
             # Block 1 + 2
-            nn.Conv1d(
-                in_channels=5, 
-                out_channels=128, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Conv1d(5, 128, kernel_size=5, padding=2),
             nn.ReLU(),
-            nn.Conv1d(
-                in_channels=128, 
-                out_channels=128, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Dropout1d(),
+
+            nn.Conv1d(128, 128, kernel_size=5, padding=2),
             nn.ReLU(),
+            nn.Dropout1d(),
 
             # Block 3 + 4
-            nn.Conv1d(
-                in_channels=128, 
-                out_channels=256, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Conv1d(128, 256, kernel_size=5, padding=2),
             nn.ReLU(),
-            nn.Conv1d(
-                in_channels=256, 
-                out_channels=256, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Dropout1d(),
+
+            nn.Conv1d(256, 256, kernel_size=5, padding=2),
             nn.ReLU(),
+            nn.Dropout1d(),
 
             # Block 5 + 6
-            nn.Conv1d(
-                in_channels=256, 
-                out_channels=512, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Conv1d(256, 512, kernel_size=5, padding=2),
             nn.ReLU(),
-            nn.Conv1d(
-                in_channels=512, 
-                out_channels=512, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Dropout1d(),
+
+            nn.Conv1d(512, 512, kernel_size=5, padding=2),
             nn.ReLU(),
+            nn.Dropout1d(),
 
             # Block 7 + 8
-            nn.Conv1d(
-                in_channels=512, 
-                out_channels=1024, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Conv1d(512, 1024, kernel_size=5, padding=2),
             nn.ReLU(),
-            nn.Conv1d(
-                in_channels=1024, 
-                out_channels=1024, 
-                kernel_size=5, 
-                padding=2
-            ),
+            nn.Dropout1d(),
+
+            nn.Conv1d(1024, 1024, kernel_size=5, padding=2),
             nn.ReLU(),
+            nn.Dropout1d(),
 
             nn.AdaptiveAvgPool1d(1),
         )
 
-        self.head = nn.Sequential( # they use dropout regularization before the fc layers
+        self.head = nn.Sequential(
             nn.Flatten(),
-            nn.Dropout1d(p=0.5),
+            nn.Dropout(p=0.5),
 
             nn.Linear(1024, 2048),
             nn.ReLU(),
