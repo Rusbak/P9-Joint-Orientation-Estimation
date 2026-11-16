@@ -1,6 +1,8 @@
 import h5py
 import numpy as np
 
+# this is good for small datasets where we can have everything in ram. but we are making a huge dataset, so we are not going to be able to load everythong into ram. instead we should make a dataloader using pytorch that let's us load batches of information, so that we only have in ram what we are currently computing on :)
+
 def load_dataset(path, requests):
     data = {}
 
