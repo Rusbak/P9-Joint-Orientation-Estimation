@@ -250,3 +250,10 @@ class TakawaleRoyDNN(nn.Module):
 
             nn.Linear(1024, 4),
         )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.head(x)
+
+        return x
+    
