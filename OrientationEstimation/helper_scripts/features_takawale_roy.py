@@ -18,17 +18,23 @@ def _ensure_one_second(signal, fs):
     
     return signal
 
-def _get_pefac_voicing(left, right, fs, voicing_threshold):
+def _get_pefac_voicing(left, right, fs):
     """
-    Run PEFAC independently on both binaural channels and combine the
-    probabilities with max(). Return PEFAC times, combined probabilities,
-    and a sample-level shared voiced mask.
+    Run PEFAC independently on both binaural channels and combine
+    their voicing probabilities.
+
+    Returns:
+        times: PEFAC frame times
+        pv: Combined frame-level probabilities
+        sample_voicing_probability: Interpolated sample-level probabilities
     """
+
     _, times_left, pv_left = v_fxpefac(left, fs)
     _, times_right, pv_right = v_fxpefac(right, fs)
 
     times_left = np.asarray(times_left, dtype=np.float64).reshape(-1)
     times_right = np.asarray(times_right, dtype=np.float64).reshape(-1)
+
     pv_left = np.asarray(pv_left, dtype=np.float64).reshape(-1)
     pv_right = np.asarray(pv_right, dtype=np.float64).reshape(-1)
 
@@ -36,7 +42,9 @@ def _get_pefac_voicing(left, right, fs, voicing_threshold):
         times_left.size == pv_left.size
         and times_right.size == pv_right.size
     ):
-        raise RuntimeError("PEFAC returned inconsistent time/probability lengths.")
+        raise RuntimeError(
+            "PEFAC returned inconsistent time/probability lengths."
+        )
 
     if times_left.size == 0 or times_right.size == 0:
         raise ValueError("PEFAC did not return any frames.")
@@ -47,20 +55,22 @@ def _get_pefac_voicing(left, right, fs, voicing_threshold):
     if not np.all(np.isfinite(pv_left)) or not np.all(np.isfinite(pv_right)):
         raise ValueError("PEFAC returned non-finite voicing probabilities.")
 
+    # Combine the two channel probabilities
     pv = np.maximum(pv_left, pv_right)
+
+    # Interpolate frame-level probabilities to individual samples
     sample_times = np.arange(left.size, dtype=np.float64) / fs
 
-    # Interpolate the frame-level PEFAC probabilities to individual samples.
-    # Outside the PEFAC time range, samples are considered unvoiced.
     sample_voicing_probability = np.interp(
-        sample_times, times_left, pv, left=0.0, right=0.0
+        sample_times,
+        times_left,
+        pv,
+        left=0.0,
+        right=0.0,
     )
-    voiced_sample_mask = sample_voicing_probability >= voicing_threshold
 
-    if not np.any(voiced_sample_mask):
-        raise ValueError("PEFAC did not detect any voiced samples.")
+    return times_left, pv, sample_voicing_probability
 
-    return times_left, pv, voiced_sample_mask
 
 def _estimate_frequency_threshold(
     left,
@@ -70,18 +80,23 @@ def _estimate_frequency_threshold(
     pefac_probability,
     stft_n_fft=2048,
     stft_hop_length=512,
-    voicing_threshold=0.5,
 ):
     """
-    Estimate a frequency-dependent power threshold from voiced STFT frames.
+    Estimate mean binaural power per frequency, weighted by PEFAC
+    frame-level voicing probabilities.
 
-    For each frequency bin, calculate mean binaural power over voiced frames.
-    The threshold is later interpolated onto the full-recording FFT grid.
+    This function is retained for experimental analysis. It is not
+    currently used in the main feature extraction pipeline.
     """
     if stft_n_fft > left.size:
-        raise ValueError("stft_n_fft cannot exceed the one-second signal length.")
+        raise ValueError(
+            "stft_n_fft cannot exceed the one-second signal length."
+        )
+
     if not 0 < stft_hop_length <= stft_n_fft:
-        raise ValueError("stft_hop_length must be in [1, stft_n_fft].")
+        raise ValueError(
+            "stft_hop_length must be in [1, stft_n_fft]."
+        )
 
     frequencies, times, left_stft = stft(
         left,
@@ -93,6 +108,7 @@ def _estimate_frequency_threshold(
         padded=False,
         scaling="spectrum",
     )
+
     _, _, right_stft = stft(
         right,
         fs=fs,
@@ -104,6 +120,7 @@ def _estimate_frequency_threshold(
         scaling="spectrum",
     )
 
+    # Interpolate PEFAC probabilities onto the STFT frame times.
     frame_voicing_probability = np.interp(
         times,
         pefac_times,
@@ -111,20 +128,27 @@ def _estimate_frequency_threshold(
         left=0.0,
         right=0.0,
     )
-    voiced_frame_mask = frame_voicing_probability >= voicing_threshold
 
-    if not np.any(voiced_frame_mask):
-        raise ValueError("No voiced STFT frames available for frequency suppression.")
+    if np.sum(frame_voicing_probability) <= 0:
+        raise ValueError(
+            "No voiced STFT frames available for frequency estimation."
+        )
 
+    # Calculate mean binaural power for each frequency bin.
     binaural_power = (
-        np.abs(left_stft) ** 2 + np.abs(right_stft) ** 2
+        np.abs(left_stft) ** 2 +
+        np.abs(right_stft) ** 2
     ) / 2.0
 
-    mean_power_per_frequency = np.mean(
-        binaural_power[:, voiced_frame_mask], axis=1
+    # Probability-weighted average over time.
+    mean_power_per_frequency = np.average(
+        binaural_power,
+        axis=1,
+        weights=frame_voicing_probability,
     )
 
-    return frequencies, mean_power_per_frequency, voiced_frame_mask
+    return frequencies, mean_power_per_frequency
+
 
 
 def _extract_binaural_features(
@@ -134,6 +158,7 @@ def _extract_binaural_features(
     cutoff_hz=952.0,
     eps=0.1,
     max_inverse=10.0,
+    valid_frequency_mask=None,
 ):
     """
     Extract the five feature channels from one pair of full-recording spectra.
@@ -170,27 +195,33 @@ def _extract_binaural_features(
     itd_high = np.where(high_mask, itd, 0.0)
 
     # inverse convolution
+    if valid_frequency_mask is None:
+        valid_frequency_mask = np.ones_like(frequencies, dtype=bool)
+
     # Reciprocal of ILD_low with numerical stabilization
     denominator = np.where(
         np.abs(ild_low) < eps,
         np.where(ild_low < 0.0, -eps, eps),
         ild_low,
     )
+
     inverse_ild_low = np.where(
-        low_mask, 
-        1.0 / denominator, 
-        0.0
+        low_mask & valid_frequency_mask,
+        1.0 / denominator,
+        0.0,
     )
+
     inverse_ild_low = np.clip(
-        inverse_ild_low, 
-        -max_inverse, 
-        max_inverse
+        inverse_ild_low,
+        -max_inverse,
+        max_inverse,
     )
 
     inverse_convolution = convolve(
-        ild_high, 
-        inverse_ild_low, 
-        mode="same", method="auto"
+        ild_high,
+        inverse_ild_low,
+        mode="same",
+        method="auto",
     )
 
     features = np.stack(
@@ -201,101 +232,56 @@ def _extract_binaural_features(
     return features.astype(np.float32, copy=False)
 
 
+
 def extract_takawale_roy_features(
     signal,
     fs,
     cutoff_hz=952.0,
-    voicing_threshold=0.5,
-    stft_n_fft=2048,
-    stft_hop_length=512,
     eps=0.1,
     max_inverse=10.0,
     return_diagnostics=False,
 ):
     """
-    Preprocess one binaural recording and extract its five frequency-domain
+    Preprocess one binaural recording and extract five frequency-domain
     feature channels.
 
-    Parameters
-    ----------
-    signal : ndarray, shape (2, samples)
-        Binaural recording. Row 0 is left; row 1 is right.
-    fs : int
-        Sampling frequency in Hz. The recording is trimmed/padded to 1 second.
-    cutoff_hz : float
-        Low/high frequency separation used for ILD and ITD.
-    voicing_threshold : float
-        PEFAC probability threshold.
-    stft_n_fft, stft_hop_length : int
-        STFT settings used only to estimate the frequency-dependent suppression
-        threshold. The final model features come from one FFT over the
-        one-second recording.
-    eps, max_inverse : float
-        Numerical stabilization parameters for the reciprocal ILD operation.
-    return_diagnostics : bool
-        If True, also return preprocessing masks and frequency axes.
-
-    Returns
-    -------
-    features : ndarray, shape (5, fs // 2 + 1)
-        Five feature channels in Conv1d's per-recording layout:
-        [ILD_low, ILD_high, ITD_low, ITD_high, inverse_convolution].
-    diagnostics : dict, optional
-        Additional information useful for inspecting preprocessing.
+    Returns:
+        features: ndarray, shape (5, fs // 2 + 1)
+        diagnostics: dict, optional
     """
     signal = np.asarray(signal)
 
     if signal.ndim != 2 or signal.shape[0] != 2:
-        raise ValueError("signal must have shape (2, samples): left and right.")
+        raise ValueError(
+            "signal must have shape (2, samples): left and right."
+        )
 
     left = _ensure_one_second(signal[0], fs)
     right = _ensure_one_second(signal[1], fs)
 
-    # 1. PEFAC on the existing binaural channels.
-    pefac_times, pefac_probability, voiced_sample_mask = _get_pefac_voicing(
-        left, right, fs, voicing_threshold
+    # 1. Estimate shared binaural voicing probabilities.
+    pefac_times, pefac_probability, sample_voicing_probability = (
+        _get_pefac_voicing(left, right, fs)
     )
 
-    # 2. Estimate a frequency-dependent threshold using voiced STFT frames.
-    threshold_frequencies, mean_power, voiced_frame_mask = (
-        _estimate_frequency_threshold(
-            left,
-            right,
-            fs,
-            pefac_times,
-            pefac_probability,
-            stft_n_fft=stft_n_fft,
-            stft_hop_length=stft_hop_length,
-            voicing_threshold=voicing_threshold,
-        )
+    # 2. Apply continuous probability weighting.
+    left_weighted = left * sample_voicing_probability
+    right_weighted = right * sample_voicing_probability
+
+    # 3. Calculate one-sided FFTs.
+    left_spectrum = np.fft.rfft(
+        left_weighted, norm="forward"
+    )
+    right_spectrum = np.fft.rfft(
+        right_weighted, norm="forward"
     )
 
-    # 3. Apply the shared PEFAC sample mask to both channels.
-    left_voiced = left * voiced_sample_mask
-    right_voiced = right * voiced_sample_mask
-
-    # 4. One full-recording, one-sided FFT per channel.
-    # norm="forward" scales by 1/N. The same scale is used for both channels,
-    # so ILD ratios and phase differences are unaffected by this normalization.
-    left_spectrum = np.fft.rfft(left_voiced, norm="forward")
-    right_spectrum = np.fft.rfft(right_voiced, norm="forward")
-    frequencies = np.fft.rfftfreq(left_voiced.size, d=1.0 / fs)
-
-    # 5. Interpolate the STFT-derived mean-power threshold to the full FFT grid.
-    # The same frequency mask is applied to both ears to preserve binaural
-    # relationships.
-    mean_power_fft = np.interp(
-        frequencies, threshold_frequencies, mean_power
+    frequencies = np.fft.rfftfreq(
+        left_weighted.size,
+        d=1.0 / fs,
     )
-    binaural_fft_power = (
-        np.abs(left_spectrum) ** 2 + np.abs(right_spectrum) ** 2
-    ) / 2.0
-    frequency_mask = binaural_fft_power >= mean_power_fft
 
-    left_spectrum = np.where(frequency_mask, left_spectrum, 0.0)
-    right_spectrum = np.where(frequency_mask, right_spectrum, 0.0)
-
-    # 6. Calculate the five frequency-domain feature channels.
+    # 4. Extract the five features.
     features = _extract_binaural_features(
         left_spectrum,
         right_spectrum,
@@ -310,14 +296,12 @@ def extract_takawale_roy_features(
             "frequencies": frequencies,
             "pefac_times": pefac_times,
             "pefac_probability": pefac_probability,
-            "voiced_sample_mask": voiced_sample_mask,
-            "voiced_frame_mask": voiced_frame_mask,
-            "frequency_mask": frequency_mask,
-            "mean_power_threshold": mean_power_fft,
+            "sample_voicing_probability": sample_voicing_probability,
         }
         return features, diagnostics
 
     return features
+
 
 ## example for how to use
 '''
@@ -345,3 +329,155 @@ print(features.dtype)
 print("Voiced samples:", np.mean(diagnostics["voiced_sample_mask"]))
 print("Retained frequency bins:", np.mean(diagnostics["frequency_mask"]))
 '''
+
+if __name__ == '__main__':
+    fs = 48000
+    t = np.arange(fs) / fs
+
+    signal = np.sin(2 * np.pi * 500 * t)
+
+    original_left = signal
+    original_right = signal
+
+    original_spectrum_left = np.fft.rfft(original_left, norm="forward")
+    original_spectrum_right = np.fft.rfft(original_right, norm="forward")
+
+    frequencies = np.fft.rfftfreq(fs, 1/fs)
+
+    original_features = _extract_binaural_features(
+        original_spectrum_left,
+        original_spectrum_left,
+        frequencies
+    )
+
+    print('test 1:')
+    print(original_features.shape)
+    print('feature   |   value')
+    print(f'ild_low  |   {original_features[0]}')
+    print(f'ild_high |   {original_features[1]}')
+    print(f'itd_low  |   {original_features[2]}')
+    print(f'itd_high |   {original_features[3]}')
+    print(f'inv_conv |   {original_features[4]}')
+
+    '''output
+    (5, 24001)
+    feature   |   value
+    ild_low  |   [0. 0. 0. ... 0. 0. 0.]
+    ild_high |   [0. 0. 0. ... 0. 0. 0.]
+    itd_low  |   [ 0.0000000e+00 -3.3342501e-18  1.4784865e-19 ...  0.0000000e+00
+    0.0000000e+00  0.0000000e+00]
+    itd_high |   [ 0.0000000e+00  0.0000000e+00  0.0000000e+00 ... -2.5498083e-24
+    2.3672353e-22  0.0000000e+00]
+    inv_conv |   [0. 0. 0. ... 0. 0. 0.]
+    '''
+
+    left = signal
+    right = 0.5 * signal
+
+    spectrum_left = np.fft.rfft(left, norm="forward")
+    spectrum_right = np.fft.rfft(right, norm="forward")
+
+    frequencies = np.fft.rfftfreq(fs, 1/fs)
+
+    features = _extract_binaural_features(
+        spectrum_left,
+        spectrum_right,
+        frequencies
+    )
+
+    print('test 2:')
+    print(features.shape)
+    print('feature   |   value')
+    print(f'ild_low  |   {features[0]}')
+    print(f'ild_high |   {features[1]}')
+    print(f'itd_low  |   {features[2]}')
+    print(f'itd_high |   {features[3]}')
+    print(f'inv_conv |   {features[4]}')
+
+    '''output
+    test 2:
+    (5, 24001)
+    feature   |   value
+    ild_low  |   [7.1197866e-07 1.6813609e-06 7.9587380e-07 ... 0.0000000e+00 0.0000000e+00
+    0.0000000e+00]
+    ild_high |   [0.0000000e+00 0.0000000e+00 0.0000000e+00 ... 3.2259011e-06 1.8535341e-06
+    4.4053822e-06]
+    itd_low  |   [ 0.0000000e+00 -3.3342501e-18  1.4784865e-19 ...  0.0000000e+00
+    0.0000000e+00  0.0000000e+00]
+    itd_high |   [ 0.0000000e+00  0.0000000e+00  0.0000000e+00 ... -2.5498083e-24
+    2.3672353e-22  0.0000000e+00]
+    inv_conv |   [ 5.9727699e-02  5.9245534e-02  5.9797738e-02 ... -9.3569414e-18
+    1.5205031e-17 -1.6374647e-17]
+    '''
+
+    delay_samples = 3
+
+    left = signal
+    right = np.concatenate([
+        np.zeros(delay_samples),
+        signal[:-delay_samples]
+    ])
+
+    spectrum_left = np.fft.rfft(left, norm="forward")
+    spectrum_right = np.fft.rfft(right, norm="forward")
+
+    frequencies = np.fft.rfftfreq(fs, 1/fs)
+
+    features = _extract_binaural_features(
+        spectrum_left,
+        spectrum_right,
+        frequencies
+    )
+
+    print('test 3:')
+    print(features.shape)
+    print('feature   |   value')
+    print(f'ild_low  |   {features[0]}')
+    print(f'ild_high |   {features[1]}')
+    print(f'itd_low  |   {features[2]}')
+    print(f'itd_high |   {features[3]}')
+    print(f'inv_conv |   {features[4]}')
+
+    features_original = _extract_binaural_features(
+        original_spectrum_left,
+        original_spectrum_right,
+        frequencies
+    )
+
+    features_swapped = _extract_binaural_features(
+        original_spectrum_right,
+        original_spectrum_left,
+        frequencies
+    )
+
+    print('test 4:')
+    print(features_swapped.shape)
+    print('feature   |   value')
+    print(f'ild_low  |   {features[0]}')
+    print(f'ild_high |   {features[1]}')
+    print(f'itd_low  |   {features[2]}')
+    print(f'itd_high |   {features[3]}')
+    print(f'inv_conv |   {features[4]}')
+
+    left = 10 * signal
+    right = 10 * signal
+
+    spectrum_left = np.fft.rfft(left, norm="forward")
+    spectrum_right = np.fft.rfft(right, norm="forward")
+
+    frequencies = np.fft.rfftfreq(fs, 1/fs)
+
+    features = _extract_binaural_features(
+        spectrum_left,
+        spectrum_right,
+        frequencies
+    )
+
+    print('test 5:')
+    print(features_swapped.shape)
+    print('feature   |   value')
+    print(f'ild_low  |   {features[0]}')
+    print(f'ild_high |   {features[1]}')
+    print(f'itd_low  |   {features[2]}')
+    print(f'itd_high |   {features[3]}')
+    print(f'inv_conv |   {features[4]}')
