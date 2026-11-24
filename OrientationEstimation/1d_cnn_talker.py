@@ -123,8 +123,8 @@ print(
 
 model = OneDimensionalCNN()
 
-# change input to fit monaural signal
-model.features[0] = nn.Conv1d(1, 16, kernel_size=15, padding=7)
+# # change input to fit monaural signal
+# model.features[0] = nn.Conv1d(1, 16, kernel_size=15, padding=7)
 model = model.to(device)
 
 optimizer = torch.optim.Adam(

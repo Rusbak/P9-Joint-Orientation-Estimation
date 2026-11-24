@@ -7,7 +7,7 @@ import time
 import os
 
 from helper_scripts.model_architectures import FeatureMLP
-from helper_scripts import monaural_features
+from helper_scripts import features_spectrogram
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 
@@ -129,7 +129,7 @@ frequency_bands = [
     (4000,7000),
 ]
 
-X_features = monaural_features.compute_features(
+X_features = features_spectrogram.compute_features(
     signals=X,
     fs=48000, # extract this from the dataset
     feature_list=feature_list,

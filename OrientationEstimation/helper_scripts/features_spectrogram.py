@@ -313,10 +313,9 @@ def compute_energy_features(
 # Main feature extraction function
 # --------------------------------------------------
 
-def extract_vdp_features(signals, frequency_bands, fs):
+def _extract_monaural_vdp_features(signals, frequency_bands, fs, eps = 1e-12):
     """
-    Extract all features relevant to monaural
-    VDP-based speaker orientation estimation.
+    Extract VDP-based features from one monaural signal.
 
     Parameters
     ----------
@@ -331,8 +330,6 @@ def extract_vdp_features(signals, frequency_bands, fs):
         Dictionary containing all feature representations.
     """
 
-    eps = 1e-12
-
     spectrum, power, frequencies, frames = compute_stft(signals, fs)
 
     mel_filters = _create_mel_filterbank(frequencies)
@@ -346,73 +343,135 @@ def extract_vdp_features(signals, frequency_bands, fs):
     )
 
     return {
-        "log_stft": log_stft[None, :, :].astype(np.float32),
-        "log_mel": log_mel[None, :, :].astype(np.float32),
+        "log_stft": log_stft.astype(np.float32),
+        "log_mel": log_mel.astype(np.float32),
         "mfcc": mfcc.astype(np.float32),
         "summary": summary,
         "band_energy": band_energy_db.astype(np.float32),
         "frequencies": frequencies.astype(np.float32),
     }
 
-def compute_features(signals, fs, feature_list, frequency_bands):
+def extract_vdp_features(signals, frequency_bands, fs):
+    """
+    Extract VDP-based features from a binaural signal.
+
+    Parameters
+    ----------
+    signals : ndarray
+        Binaural waveform with shape (num_samples, 2).
+
+    fs : int
+        Sampling frequency.
+
+    Returns
+    -------
+    features : dict
+        Dictionary containing feature representations.
+        Features are stacked along the first dimension (left, right).
+    """
+
+    signals = np.asarray(signals)
+
+    if signals.ndim != 2 or signals.shape[1] != 2:
+        raise ValueError(
+            "Expected binaural signals with shape (num_samples, 2)."
+        )
+
+    left_features = _extract_monaural_vdp_features(
+        signals[:, 0], frequency_bands, fs
+    )
+
+    right_features = _extract_monaural_vdp_features(
+        signals[:, 1], frequency_bands, fs
+    )
+
+    features = {}
+
+    for key in left_features:
+        if key == "frequencies":
+            # Frequency bins are identical for both ears.
+            features[key] = left_features[key]
+        else:
+            features[key] = np.stack(
+                [left_features[key], right_features[key]],
+                axis=0
+            )
+
+    return features
+
+def compute_features(signals, fs, feature_list, frequency_bands, eps = 1e-12):
     '''
     As we introduce more features, we really need to do this better...
     There is a function called something like str2func, which would make this so much easier.
     '''
-    eps = 1e-12
+
+    signals = np.asarray(signals)
+
+    if signals.ndim != 3 or signals.shape[2] != 2:
+        raise ValueError(
+            "Expected signals with shape (num_recordings, num_samples, 2)."
+        )
 
     all_features = []
     
     for signal in signals:
-        computed_features = []
-        log_mel = None
 
-        spectrum, power, frequencies, frames = compute_stft(signal, fs)
-        mel_filters = _create_mel_filterbank(frequencies)
+        ear_features = []
 
-        if 'log_stft' in feature_list:
-            computed_features.append(
-                compute_log_stft(power, eps)
+        for ear_idx in range(2):
+
+            ear_signal = signal[:, ear_idx]
+            computed_features = []
+            log_mel = None
+
+            spectrum, power, frequencies, frames = compute_stft(
+                ear_signal, fs
             )
-        if 'log_mel' in feature_list:
-            log_mel = compute_log_mel(mel_filters, power, eps)
-            computed_features.append(
-                log_mel
-            )
-        if 'mfcc' in feature_list:
-            if log_mel is None:
+
+            mel_filters = _create_mel_filterbank(frequencies)
+
+            if 'log_stft' in feature_list:
+                computed_features.append(
+                    compute_log_stft(power, eps)
+                )
+
+            if 'log_mel' in feature_list:
                 log_mel = compute_log_mel(mel_filters, power, eps)
-            computed_features.append(
-                compute_mfcc(log_mel)
-            )
-        if 'summary' in feature_list or 'band_energy_db' in feature_list:
-            summary, band_energy_db = compute_energy_features(power, frequencies, frequency_bands, frames, eps)
-            if 'summary' in feature_list:
+                computed_features.append(log_mel)
+
+            if 'mfcc' in feature_list:
+                if log_mel is None:
+                    log_mel = compute_log_mel(mel_filters, power, eps)
+
                 computed_features.append(
-                    summary
+                    compute_mfcc(log_mel)
                 )
-            if 'band_energy_db' in feature_list:
-                computed_features.append(
-                    band_energy_db
+
+            if 'summary' in feature_list or 'band_energy_db' in feature_list:
+                summary, band_energy_db = compute_energy_features(
+                    power, frequencies, frequency_bands, frames, eps
                 )
-        if 'frequencies' in feature_list:
-            computed_features.append(
-                frequencies
-            )
 
-        # Sanity check
-        if not computed_features:
-            raise ValueError("No features were computed. Check feature_list.")
+                if 'summary' in feature_list:
+                    computed_features.append(summary)
 
-        # # Combine all features for this sample into one vector
-        # sample_features = np.concatenate([
-        #     np.asarray(feature, dtype=np.float32).reshape(-1)
-        #     for feature in computed_features
-        # ])
-        
-        sample_features = computed_features[0].astype(np.float32)
+                if 'band_energy_db' in feature_list:
+                    computed_features.append(band_energy_db)
 
-        all_features.append(sample_features)
+            if 'frequencies' in feature_list:
+                computed_features.append(frequencies)
 
-    # return np.asarray(all_features, dtype=np.float32)
-    return np.stack(all_features)
+            # Sanity check
+            if not computed_features:
+                raise ValueError(
+                    "No features were computed. Check feature_list."
+                )
+
+            sample_features = computed_features.astype(np.float32)
+
+            ear_features.append(sample_features)
+
+        # Stack left and right ear features.
+        all_features.append(np.stack(ear_features, axis=0))
+
+    return np.stack(all_features, axis=0)
