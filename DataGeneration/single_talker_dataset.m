@@ -1,11 +1,11 @@
-%% Single VDP Monaural Dataset Generator
+%% Single VDP Binaural Dataset Generator
 
 % Signal generation:
 %   1. Load a singular VDP. (Measured from phonetically balanced sentence)
 %   2. Rotate the receiver pair according to talker orientation.
 %   3. Generate clean source signals (chirps).
 %   4. Apply free-field propagation delay and spherical spreading.
-%   5. Save monaural signals and labels to HDF5.
+%   5. Save binaural signals and labels to HDF5.
 
 clear;
 clc;
@@ -15,16 +15,36 @@ close all;
 
 cfg.fs = 48000;               % Sampling frequency [Hz]
 cfg.signalDuration = 0.25;    % Chirp duration [s]
+cfg.soundSpeed = 343;         % Speed of sound in air [m/s]
 cfg.numClasses = 48;          % One class per measured azimuth if classification
 cfg.labelMode = 'regression'; % 'regression' or 'classification'
 cfg.signalDataType = 'single';
 cfg.randomSeed = 42;
 
-% cfg.outputFile = 'Datasets/single_talker_dataset_600.h5';
+% Fixed conversational layout
+cfg.listenerPosition = [0, 0];
+cfg.pairDistance = 2.5;
+cfg.talkerPosition = [cfg.pairDistance, 0];
+
+cfg.coordinateSystem = 'cartesian';
+cfg.referenceAxisDeg = 0;  % Positive x-axis
+
+% Direction from listener to talker
+cfg.listenerBearing = atan2d( ...
+    cfg.talkerPosition(2) - cfg.listenerPosition(2), ...
+    cfg.talkerPosition(1) - cfg.listenerPosition(1));
+
+% Direction from talker to listener
+cfg.talkerBearing = atan2d( ...
+    cfg.listenerPosition(2) - cfg.talkerPosition(2), ...
+    cfg.listenerPosition(1) - cfg.talkerPosition(1));
+
+cfg.outputFile = 'Datasets/single_talker_dataset.h5';
 
 cfg.talkerSOFAFile =  ...
     'D:\Python Projects\P9Datasets\VDP_Porschmann_database\Sentence_Upsampled\DirectivitySentence_6_upsampled.sofa';
-
+cfg.listenerSOFAFile = ...
+    'D:\Python Projects\P9Datasets\HRTF_OlHeaD_database\HRIRs_SOFA\VP_N6-ED.SOFA';
 
 %% 2. Read SOFA measurements
 
@@ -80,10 +100,33 @@ fprintf('Loaded talker file: %s\n', cfg.talkerSOFAFile);
 % fprintf('Data.Real/Imag size [samples, receivers]: %s\n', ...
 %     mat2str(size(dataReal)));
 fprintf('Selected horizontal directions: %d\n', numel(angleDegs));
-fprintf('Azimuths (degrees):\n');
-disp(angleDegs);
+% fprintf('Azimuths (degrees):\n');
+% disp(angleDegs);
 fprintf('Receiver radii among selected directions (m):\n');
 disp(unique(radiusM(measurementIdx)));
+
+% listener information
+listenerSourcePosition = ncread(cfg.listenerSOFAFile, 'SourcePosition');
+listenerHrir = ncread(cfg.listenerSOFAFile, 'Data.IR');
+listenerSofaFs = double(ncread(cfg.listenerSOFAFile, 'Data.SamplingRate'));
+
+listenerAzimuthDeg = mod(double(listenerSourcePosition(1, :)), 360);
+listenerElevationDeg = double(listenerSourcePosition(2, :));
+listenerDistanceM = double(listenerSourcePosition(3, :));
+
+listenerHorizontalIdx = find(abs(listenerElevationDeg) < 1e-6);
+[listenerAngleDegs, listenerSortOrder] = sort(azimuthDeg(listenerHorizontalIdx));
+listenerMeasurementIdx = listenerHorizontalIdx(listenerSortOrder);
+
+fprintf('Loaded SOFA file: %s\n', cfg.listenerSOFAFile);
+fprintf('SOFA sampling rate: %.0f Hz\n', listenerSofaFs);
+% fprintf('HRIR size [samples, receivers, measurements]: %s\n', ...
+%     mat2str(size(listenerHrir)));
+fprintf('Selected horizontal directions: %d\n', numel(listenerAngleDegs));
+% fprintf('Azimuths (degrees):\n');
+% disp(listenerAnglesDeg);
+fprintf('Source distance(s) among selected directions (m):\n');
+disp(unique(listenerDistanceM(listenerMeasurementIdx)));
 
 
 %% 3. Reconstruct full frequency spectrum
@@ -145,8 +188,8 @@ for m = 1:numel(measurementIdx)
     H_check = fft(h,nfft);
     reconstructionError = max(abs(H_check-H_full));
     
-    fprintf("Receiver %d: FFT reconstruction error: %.3e\n", ...
-        receiverIdx, reconstructionError);
+    % fprintf("Receiver %d: FFT reconstruction error: %.3e\n", ...
+    %     receiverIdx, reconstructionError);
 
     % Store impulse response
     impulseResponses(receiverIdx,:) = h;
@@ -157,7 +200,7 @@ end
 
 rng(cfg.randomSeed);
 
-numChirps = 10;
+numChirps = 4;
 
 fs = cfg.fs;
 numTimeSamples = round(cfg.signalDuration * fs);
@@ -166,6 +209,7 @@ t = (0:numTimeSamples-1)' / fs;
 minFrequency = 300;
 maxFrequency = 7000;
 fadeDuration = 0.005;
+source.minFreqDiff = 1000;
 
 sourceSignals = zeros(numTimeSamples, numChirps);
 
@@ -181,7 +225,7 @@ for chirpIdx = 1:numChirps
         rand * (maxFrequency - minFrequency);
 
     % Avoid very small frequency sweeps.
-    while abs(f1 - f0) < 500
+    while abs(f1 - f0) < source.minFreqDiff
         f1 = minFrequency + ...
             rand * (maxFrequency - minFrequency);
     end
@@ -214,13 +258,16 @@ end
 
 %% 5. Allocate arrays
 
-N = numel(angleDegs);
+talkerN = numel(angleDegs);
+listenerN = numel(listenerAngleDegs);
+
 numIrSamples = size(impulseResponses, 2);
-numOutputSamples = numTimeSamples + numIrSamples - 1;
+numHrirSamples = size(listenerHrir, 1);
+numOutputSamples = numTimeSamples + numIrSamples + numHrirSamples - 2;
 
-numSamples = N * numChirps;
+numSamples = talkerN * listenerN * numChirps;
 
-signals = zeros(numOutputSamples, 1, numSamples, cfg.signalDataType); % receivers for this dataset are not ears
+signals = zeros(numOutputSamples, 2, numSamples, cfg.signalDataType); % receivers for this dataset are not ears
 
 orientationDeg = zeros(numSamples, 1, 'single');
 orientationRad = zeros(numSamples, 1, 'single');
@@ -233,7 +280,7 @@ chirpLabels = zeros(numSamples, 1, 'uint16');
 measurementLabels = zeros(numSamples, 1, 'uint16');
 
 
-%% 6. Generate monaural samples
+%% 6. Generate binaural samples
 
 % Classification labels are assigned by sorted measured direction.
 % This gives 48 classes if cfg.numClasses=48. Regression labels always
@@ -247,35 +294,48 @@ sampleIdx = 0;
 for chirpIdx = 1:numChirps
     sourceSignal = sourceSignals(:, chirpIdx);
 
-    for k = 1:N
-        sampleIdx = sampleIdx + 1;
+    for j = 1:listenerN
+        listenerM = listenerMeasurementIdx(j);
 
-        m = measurementIdx(k);
+        hrirLeft = double(listenerHrir(:, 1, listenerM));
+        hrirRight = double(listenerHrir(:, 2, listenerM));
 
-        ir = double(impulseResponses(m,:));
+        for k = 1:talkerN
+            sampleIdx = sampleIdx + 1;
+    
+            m = measurementIdx(k);
+    
+            ir = double(impulseResponses(m,:));
+    
+            % Apply the measured talker VDP.
+            emittedSignal = conv(sourceSignal, ir, 'full');
 
-        % Apply the measured talker VDP.
-        emittedSignal = conv(sourceSignal, ir, 'full');
-
-        signals(:, 1, sampleIdx) = ...
-            cast(emittedSignal, cfg.signalDataType);
-
-        % Regression labels.
-        orientationDeg(sampleIdx) = single(angleDegs(k));
-        orientationRad(sampleIdx) = single(deg2rad(angleDegs(k)));
-
-        % Classification labels.
-        bin = floor((k - 1) * cfg.numClasses / N);
-        bin = min(max(bin, 0), cfg.numClasses - 1);
-
-        classIndex(sampleIdx) = uint16(bin);
-
-        classCenterDeg(sampleIdx) = ...
-            single((bin + 0.5) * 360 / cfg.numClasses);
-
-        % Metadata. meh
-        chirpLabels(sampleIdx) = uint16(chirpIdx);
-        measurementLabels(sampleIdx) = uint16(m);
+            % Receive signal by HRTF
+            receivedLeft = conv(emittedSignal, hrirLeft, 'full');
+            receivedRight = conv(emittedSignal, hrirRight, 'full');
+    
+            signals(:, 1, sampleIdx) = ...
+                cast(receivedLeft, cfg.signalDataType);
+            signals(:, 2, sampleIdx) = ...
+                cast(receivedRight, cfg.signalDataType);
+    
+            % Regression labels.
+            orientationDeg(sampleIdx) = single(angleDegs(k));
+            orientationRad(sampleIdx) = single(deg2rad(angleDegs(k)));
+    
+            % Classification labels.
+            bin = floor((k - 1) * cfg.numClasses / talkerN);
+            bin = min(max(bin, 0), cfg.numClasses - 1);
+    
+            classIndex(sampleIdx) = uint16(bin);
+    
+            classCenterDeg(sampleIdx) = ...
+                single((bin + 0.5) * 360 / cfg.numClasses);
+    
+            % Metadata. meh
+            chirpLabels(sampleIdx) = uint16(chirpIdx);
+            measurementLabels(sampleIdx) = uint16(m);
+        end
     end
 end
 
@@ -297,7 +357,7 @@ end
 h5create(cfg.outputFile, '/signals', size(signals), ...
     'Datatype', cfg.signalDataType, ...
     'Deflate', 4, ...
-    'ChunkSize', [numOutputSamples, 1, 1]);
+    'ChunkSize', [numOutputSamples, 2, 1]);
 h5write(cfg.outputFile, '/signals', signals);
 
 % Labels
@@ -318,7 +378,7 @@ h5write(cfg.outputFile, '/class_center_deg', classCenterDeg);
 
 h5writeatt(cfg.outputFile, '/', 'sampling_rate_hz', cfg.fs);
 h5writeatt(cfg.outputFile, '/', 'signal_duration_s', cfg.signalDuration);
-h5writeatt(cfg.outputFile, '/', 'num_examples', N);
+h5writeatt(cfg.outputFile, '/', 'num_examples', numSamples);
 h5writeatt(cfg.outputFile, '/', 'num_classes', cfg.numClasses);
 h5writeatt(cfg.outputFile, '/', 'label_mode', cfg.labelMode);
 h5writeatt(cfg.outputFile, '/', 'source_type', 'clean_broadband_chirps');
@@ -338,12 +398,12 @@ h5writeatt(cfg.outputFile, '/', 'class_index_convention', ...
 
 fprintf('\nHRTF dataset generation completed.\n');
 fprintf('Output file: %s\n', cfg.outputFile);
-fprintf('Number of examples: %d\n', N);
+fprintf('Number of examples: %d\n', numSamples);
 fprintf('Sampling frequency: %d Hz\n', fs);
 fprintf('Chirp samples: %d\n', numTimeSamples);
 fprintf('IR samples: %d\n', numIrSamples);
 fprintf('Output samples per channel: %d\n', numOutputSamples);
 fprintf('Label mode: %s\n', cfg.labelMode);
 
-fprintf('HDF5 contents:\n');
-h5disp(cfg.outputFile);
+% fprintf('HDF5 contents:\n');
+% h5disp(cfg.outputFile);
