@@ -1,0 +1,12 @@
+numpy
+matplotlib
+time
+os
+pathlib
+
+scipy
+torch
+torchaudio
+
+h5py
+pyvoicebox
