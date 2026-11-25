@@ -179,8 +179,8 @@ print(
 
 model = TwoDimensionalCNN(num_classes=2) # num_classes=2 for 2 outputs?
 
-# change input to fit monaural signal
-model.features[0] = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+# # change input to fit monaural signal
+# model.features[0] = nn.Conv2d(1, 32, kernel_size=3, padding=1)
 model = model.to(device)
 
 optimizer = torch.optim.Adam(

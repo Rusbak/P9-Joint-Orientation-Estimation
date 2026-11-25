@@ -345,9 +345,7 @@ for epoch in range(EPOCHS):
 
 training_time = time.perf_counter() - start_time
 
-print(
-    f"Finished training in {training_time:.2f} seconds"
-)
+print(f"Finished training in {training_time:.2f} seconds")
 
 model.load_state_dict(best_state)
 

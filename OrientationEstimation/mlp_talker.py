@@ -74,23 +74,23 @@ N = len(angles)
 
 
 # --------------------------------------------------
-# Convert signals to (N, 1, T)
+# Convert signals to (N, 2, T)
 # --------------------------------------------------
 
 # N = examples
-# 1 = receiver
+# 2 = receiver
 # T = time samples
 
-if X.shape[0] == N and X.shape[1] == 1:
+if X.shape[0] == N and X.shape[1] == 2:
     pass
-elif X.shape[0] == N and X.shape[2] == 1:
+elif X.shape[0] == N and X.shape[2] == 2:
     X = X.transpose(0, 2, 1)
-elif X.shape[2] == N and X.shape[1] == 1:
+elif X.shape[2] == N and X.shape[1] == 2:
     X = X.transpose(2, 1, 0)
 else:
     raise ValueError(
         f"Unexpected signal shape {X.shape}; "
-        f"expected {N} examples and 1 channels."
+        f"expected {N} examples and 2 channels."
     )
 
 

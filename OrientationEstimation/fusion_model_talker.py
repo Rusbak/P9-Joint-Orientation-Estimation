@@ -236,8 +236,8 @@ print(
 model = FusionModel(
     input_size=X_features.shape[1]
 )
-# change input to fit monaural signal
-model.cnn.features[0] = nn.Conv1d(1, 16, kernel_size=15, padding=7)
+# # change input to fit monaural signal
+# model.cnn.features[0] = nn.Conv1d(1, 16, kernel_size=15, padding=7)
 model = model.to(device)
 
 optimizer = torch.optim.Adam(
