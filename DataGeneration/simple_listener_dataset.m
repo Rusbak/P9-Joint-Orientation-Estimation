@@ -12,7 +12,7 @@ close all;
 
 %% 1. Configuration
 
-cfg.outputFile = 'Datasets/simple_listener_dataset.h5';
+cfg.outputFile = 'Datasets/simple_listener_dataset_3600.h5';
 
 % Dataset size
 cfg.numSamples = 3600;
@@ -234,7 +234,7 @@ fprintf('\nHRTF dataset generation completed.\n');
 fprintf('Output file: %s\n', cfg.outputFile);
 fprintf('Number of examples: %d\n', N);
 fprintf('Sampling frequency: %d Hz\n', fs);
-fprintf('Output samples per channel: %d\n', numOutputSamples);
+fprintf('Output samples per channel: %d\n', numTimeSamples);
 fprintf('Label mode: %s\n', cfg.labelMode);
 
 fprintf('HDF5 contents:\n');

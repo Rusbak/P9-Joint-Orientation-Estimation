@@ -20,7 +20,7 @@ cfg.labelMode = 'regression'; % 'regression' or 'classification'
 cfg.signalDataType = 'single';
 cfg.randomSeed = 42;
 
-cfg.outputFile = 'Datasets/single_listener_dataset_480.h5';
+cfg.outputFile = 'Datasets/single_listener_dataset_960.h5';
 
 cfg.listenerSOFAFile = ...
     'D:\Python Projects\P9Datasets\HRTF_OlHeaD_database\HRIRs_SOFA\VP_N6-ED.SOFA';
@@ -97,7 +97,7 @@ disp(unique(distanceM(measurementIdx)));
 
 rng(cfg.randomSeed);
 
-numChirps = 10;
+numChirps = 20;
 
 fs = cfg.fs;
 numTimeSamples = round(cfg.signalDuration * fs);
@@ -285,7 +285,7 @@ h5writeatt(cfg.outputFile, '/', 'class_index_convention', ...
 
 fprintf('\nHRTF dataset generation completed.\n');
 fprintf('Output file: %s\n', cfg.outputFile);
-fprintf('Number of examples: %d\n', N);
+fprintf('Number of examples: %d\n', numSamples);
 fprintf('Sampling frequency: %d Hz\n', fs);
 fprintf('Chirp samples: %d\n', numTimeSamples);
 fprintf('HRIR samples: %d\n', numHrirSamples);
